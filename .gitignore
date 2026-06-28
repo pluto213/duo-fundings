@@ -1,0 +1,21 @@
+# Virtual environments
+venv/
+.venv/
+fund_venv/
+*_venv/
+
+# Cache
+fund_cache/
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env

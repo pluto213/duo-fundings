@@ -42,9 +42,9 @@ class Transaction(Base):
     holding_id = Column(String(8), ForeignKey("holdings.id"), nullable=True, comment="关联持仓")
     fund_code = Column(String(6), nullable=False, index=True, comment="基金代码")
     type = Column(
-        Enum("buy", "sell", "dividend", name="transaction_type"),
+        Enum("buy", "sell", "dividend", "init", name="transaction_type"),
         nullable=False,
-        comment="交易类型: buy/sell/dividend",
+        comment="交易类型: buy/sell/dividend/init",
     )
     nav = Column(Numeric(10, 4), nullable=False, comment="交易净值")
     amount = Column(Numeric(14, 2), nullable=True, comment="交易金额")

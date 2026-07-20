@@ -22,4 +22,6 @@ Thumbs.db
 
 # Database
 *.db
-app/data/
+
+# User data (contains personal fund data)
+data/import_*.csv

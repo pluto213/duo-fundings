@@ -1,14 +1,13 @@
-#!/bin/bash
-echo "创建虚拟环境..."
-python3 -m venv fund_venv
+启动命令：
 
-echo "激活虚拟环境..."
-source fund_venv/bin/activate
+# 激活虚拟环境
+source venv/bin/activate
 
-echo "安装依赖包..."
-pip install --upgrade pip
-pip install requests pandas numpy scipy matplotlib scikit-learn
+# 启动（开发模式，代码修改自动重启）
+uvicorn main:app --reload
 
-echo "安装完成！"
-echo "运行 'source fund_venv/bin/activate' 激活环境"
-echo "然后运行 'python fund_cluster.py'"
+# 指定端口
+uvicorn main:app --reload --port 8000
+
+# 生产环境（不需要 --reload）
+uvicorn main:app --host 0.0.0.0 --port 8000

@@ -129,15 +129,19 @@ def build_holdings_from_transactions(db, exclude_codes: set[str]):
             fund_map[code] = {
                 "total_buy_shares": 0,
                 "total_buy_amount": 0,
+                "total_sell_amount": 0,
                 "first_buy_date": tx.trade_date,
             }
         if tx.type == "buy":
             fund_map[code]["total_buy_shares"] += float(tx.shares)
             fund_map[code]["total_buy_amount"] += float(tx.amount)
+        elif tx.type == "sell":
+            fund_map[code]["total_sell_amount"] += float(tx.amount)
 
     for code, info in fund_map.items():
         total_shares = info["total_buy_shares"]
-        total_amount = info["total_buy_amount"]
+        total_buy = info["total_buy_amount"]
+        total_sell = info["total_sell_amount"]
 
         sell_shares = sum(
             abs(float(tx.shares))
@@ -150,8 +154,9 @@ def build_holdings_from_transactions(db, exclude_codes: set[str]):
             print(f"  {code}: 已清仓（剩余 {current_shares:.2f} 份），跳过")
             continue
 
-        avg_nav = total_amount / total_shares if total_shares > 0 else 0
-        cost = avg_nav * current_shares
+        # 成本 = 买入总金额 - 卖出总金额（实际净投入）
+        cost = total_buy - total_sell
+        avg_nav = cost / current_shares if current_shares > 0 else 0
 
         holding = Holding(
             fund_code=code,

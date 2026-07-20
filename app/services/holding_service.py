@@ -41,15 +41,51 @@ def _get_fund_name(fund_code: str) -> Optional[str]:
     return None
 
 
-def _to_my_holding(h: Holding) -> MyHolding:
+def _calc_return(db: Session, h: Holding, current_nav: float) -> dict:
+    """计算持仓收益
+
+    Returns:
+        dict with keys: cost, current_value, profit, return_rate
+    """
+    cost = float(h.cost)
+    shares = float(h.shares)
+    current_value = current_nav * shares if current_nav else None
+
+    if current_value is None:
+        return {"cost": cost, "current_value": None, "profit": None, "return_rate": None}
+
+    profit = current_value - cost
+
+    if cost > 0:
+        # 正常情况：收益 / 成本
+        return_rate = profit / cost
+    elif cost < 0:
+        # 成本为负：已收回本金，用原始投入计算
+        # 原始投入 = 买入总金额（从 transactions 汇总）
+        total_buy = sum(
+            float(tx.amount)
+            for tx in db.query(Transaction).filter(
+                Transaction.fund_code == h.fund_code,
+                Transaction.type == "buy",
+            ).all()
+        )
+        return_rate = (current_value + abs(cost)) / total_buy if total_buy > 0 else 0
+    else:
+        return_rate = 0
+
+    return {
+        "cost": cost,
+        "current_value": current_value,
+        "profit": profit,
+        "return_rate": return_rate,
+    }
+
+
+def _to_my_holding(db: Session, h: Holding) -> MyHolding:
     """将 ORM 对象转为响应模型，补充实时数据"""
     current_nav = _get_current_nav(h.fund_code)
     fund_name = _get_fund_name(h.fund_code)
-
-    cost = float(h.cost)
-    current_value = current_nav * float(h.shares) if current_nav else None
-    profit = (current_value - cost) if current_value is not None else None
-    return_rate = (profit / cost) if profit is not None and cost > 0 else None
+    result = _calc_return(db, h, current_nav)
 
     return MyHolding(
         id=h.id,
@@ -58,11 +94,11 @@ def _to_my_holding(h: Holding) -> MyHolding:
         buy_nav=float(h.buy_nav),
         shares=float(h.shares),
         buy_date=str(h.buy_date),
-        cost=round(cost, 2),
+        cost=round(result["cost"], 2),
         current_nav=round(current_nav, 4) if current_nav else None,
-        current_value=round(current_value, 2) if current_value else None,
-        profit=round(profit, 2) if profit is not None else None,
-        return_rate=round(return_rate, 4) if return_rate is not None else None,
+        current_value=round(result["current_value"], 2) if result["current_value"] else None,
+        profit=round(result["profit"], 2) if result["profit"] is not None else None,
+        return_rate=round(result["return_rate"], 4) if result["return_rate"] is not None else None,
     )
 
 
@@ -97,13 +133,13 @@ def create_holding(db: Session, req: HoldingCreate) -> MyHolding:
     db.commit()
     db.refresh(holding)
 
-    return _to_my_holding(holding)
+    return _to_my_holding(db, holding)
 
 
 def list_holdings(db: Session) -> HoldingListResponse:
     """查询所有持仓"""
     holdings = db.query(Holding).all()
-    items = [_to_my_holding(h) for h in holdings]
+    items = [_to_my_holding(db, h) for h in holdings]
     return HoldingListResponse(holdings=items, total_count=len(items))
 
 
@@ -144,7 +180,7 @@ def update_holding(db: Session, holding_id: str, req: HoldingUpdate) -> MyHoldin
     db.commit()
     db.refresh(holding)
 
-    return _to_my_holding(holding)
+    return _to_my_holding(db, holding)
 
 
 def delete_holding(db: Session, holding_id: str) -> bool:
@@ -164,12 +200,18 @@ def get_portfolio_summary(db: Session) -> PortfolioSummary:
     if not holdings:
         return PortfolioSummary()
 
-    items = [_to_my_holding(h) for h in holdings]
+    items = [_to_my_holding(db, h) for h in holdings]
 
     total_cost = sum(h.cost for h in items)
     total_value = sum(h.current_value for h in items if h.current_value is not None)
     total_profit = total_value - total_cost
-    total_return_rate = total_profit / total_cost if total_cost > 0 else 0
+
+    # 收益率：用原始投入计算（避免负成本干扰）
+    total_buy = sum(
+        float(tx.amount)
+        for tx in db.query(Transaction).filter(Transaction.type == "buy").all()
+    )
+    total_return_rate = total_profit / total_buy if total_buy > 0 else 0
 
     return PortfolioSummary(
         total_cost=round(total_cost, 2),

@@ -49,6 +49,24 @@ class FundMapping(Base):
         return f"<FundMapping {self.fund_code} -> {self.mapped_fund_code}>"
 
 
+class FundStockHolding(Base):
+    """基金股票持仓缓存表 — 按季度存储"""
+    __tablename__ = "fund_stock_holdings"
+
+    id = Column(String(8), primary_key=True, default=gen_uuid)
+    fund_code = Column(String(6), nullable=False, index=True, comment="原基金代码")
+    query_code = Column(String(6), nullable=False, comment="实际查询的代码（映射后）")
+    quarter = Column(String(7), nullable=False, comment="季度标识（如 2026-Q2）")
+    report_date = Column(Date, nullable=False, comment="报告期日期（如 2026-06-30）")
+    stock_code = Column(String(10), nullable=False, comment="股票代码")
+    stock_name = Column(String(50), nullable=False, comment="股票名称")
+    weight = Column(Numeric(8, 4), nullable=False, comment="持仓占比")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+
+    def __repr__(self):
+        return f"<FundStockHolding {self.fund_code} {self.quarter} {self.stock_code}>"
+
+
 class Transaction(Base):
     """交易流水表 — 记录每一笔买卖"""
     __tablename__ = "transactions"

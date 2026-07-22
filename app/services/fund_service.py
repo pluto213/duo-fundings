@@ -1,11 +1,18 @@
-"""基金数据服务层 — 封装 akshare 调用"""
+"""基金数据服务层 — 封装 akshare 调用，支持持仓缓存"""
+
+import re
+from datetime import date, datetime
+from io import StringIO
+from typing import Optional
 
 import akshare as ak
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Optional
+import requests
+from sqlalchemy.orm import Session
 
+from app.db import SessionLocal
+from app.models.db_models import FundMapping, FundStockHolding
 from app.models.fund import (
     FundHoldingsResponse,
     FundInfoResponse,
@@ -16,31 +23,117 @@ from app.models.fund import (
     NavPoint,
     ReturnItem,
 )
+from app.utils import get_current_quarter
 
 
-# ==================== 基金持仓 ====================
+# ==================== 基金持仓（带缓存） ====================
 
-def get_fund_holdings(fund_code: str, date: str = "2025") -> FundHoldingsResponse:
-    """获取基金持仓数据"""
+def _get_mapped_fund_code(fund_code: str) -> str:
+    """查询基金映射，返回实际持仓的 ETF 代码"""
+    db = SessionLocal()
     try:
-        df: pd.DataFrame = ak.fund_portfolio_hold_em(symbol=fund_code, date=date)
-    except Exception as e:
-        raise RuntimeError(f"akshare 接口调用失败: {e}")
+        mapping = db.query(FundMapping).filter(FundMapping.fund_code == fund_code).first()
+        return mapping.mapped_fund_code if mapping else fund_code
+    finally:
+        db.close()
 
-    if df is None or df.empty:
-        raise ValueError(f"基金 {fund_code} 在 {date} 年无持仓数据")
 
+def _get_cached_holdings(db: Session, fund_code: str, quarter: str) -> list[dict]:
+    """从数据库查询缓存的持仓数据"""
+    records = db.query(FundStockHolding).filter(
+        FundStockHolding.fund_code == fund_code,
+        FundStockHolding.quarter == quarter,
+    ).all()
+
+    if not records:
+        return []
+
+    return [
+        {
+            "stock_code": r.stock_code,
+            "stock_name": r.stock_name,
+            "weight": float(r.weight),
+            "report_date": str(r.report_date),
+        }
+        for r in records
+    ]
+
+
+def _save_holdings_to_cache(db: Session, fund_code: str, query_code: str,
+                             quarter: str, report_date: str, holdings: list[dict]):
+    """保存持仓数据到缓存"""
+    # 删除旧数据
+    db.query(FundStockHolding).filter(
+        FundStockHolding.fund_code == fund_code,
+        FundStockHolding.quarter == quarter,
+    ).delete()
+
+    # 插入新数据
+    for h in holdings:
+        record = FundStockHolding(
+            fund_code=fund_code,
+            query_code=query_code,
+            quarter=quarter,
+            report_date=datetime.strptime(report_date, "%Y-%m-%d").date(),
+            stock_code=h["stock_code"],
+            stock_name=h["stock_name"],
+            weight=h["weight"],
+        )
+        db.add(record)
+
+    db.commit()
+
+
+def _fetch_holdings_from_api(fund_code: str, year: str) -> tuple[list[dict], str]:
+    """从东方财富 API 获取持仓数据
+
+    Returns:
+        (持仓列表, 报告期日期)
+    """
+    query_code = _get_mapped_fund_code(fund_code)
+
+    url = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
+    params = {
+        "type": "jjcc",
+        "code": query_code,
+        "topline": "10",
+        "year": year,
+        "month": "",
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://fundf10.eastmoney.com/",
+    }
+
+    r = requests.get(url, params=params, headers=headers, timeout=15)
+    content = r.text
+
+    # 提取 HTML 内容
+    html_match = re.search(r'content:"(.*?)"', content, re.DOTALL)
+    if not html_match:
+        raise ValueError(f"基金 {fund_code} 在 {year} 年无持仓数据")
+
+    html = html_match.group(1)
+    if "暂无" in html or not html.strip():
+        raise ValueError(f"基金 {fund_code} 在 {year} 年无持仓数据")
+
+    # 解析表格
+    tables = pd.read_html(StringIO(html))
+    if not tables:
+        raise ValueError(f"基金 {fund_code} 在 {year} 年无持仓数据")
+
+    df = tables[0]  # 取最新季度
+
+    # 提取报告日期
+    report_date_match = re.search(r'截止至：.*?(\d{4}-\d{2}-\d{2})', html)
+    report_date = report_date_match.group(1) if report_date_match else None
+
+    # 标准化列名
     col_map = {
         "股票代码": "stock_code",
-        "股票简称": "stock_name",
         "股票名称": "stock_name",
+        "占净值 比例": "weight",
         "占净值比例": "weight",
-        "占净值比": "weight",
-        "持仓占比": "weight",
-        "持股数": "shares",
-        "持仓数量": "shares",
-        "持仓市值": "market_value",
-        "报告期": "report_date",
     }
     df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
 
@@ -52,31 +145,81 @@ def get_fund_holdings(fund_code: str, date: str = "2025") -> FundHoldingsRespons
         if df["weight"].max() > 1:
             df["weight"] = df["weight"] / 100
 
-    fund_name = _get_fund_name(fund_code)
-    report_date = str(df["report_date"].iloc[0]) if "report_date" in df.columns else None
-
-    holdings: list[HoldingItem] = []
+    holdings = []
     for _, row in df.iterrows():
         w = row.get("weight", 0)
         if pd.isna(w) or w <= 0:
             continue
-        holdings.append(
-            HoldingItem(
-                stock_code=str(row.get("stock_code", "")),
-                stock_name=str(row.get("stock_name", "")),
-                weight=round(float(w), 6),
-                shares=float(row["shares"]) if "shares" in df.columns and pd.notna(row.get("shares")) else None,
-                market_value=float(row["market_value"]) if "market_value" in df.columns and pd.notna(row.get("market_value")) else None,
-            )
-        )
+        holdings.append({
+            "stock_code": str(row.get("stock_code", "")),
+            "stock_name": str(row.get("stock_name", "")),
+            "weight": round(float(w), 6),
+        })
 
-    return FundHoldingsResponse(
-        fund_code=fund_code,
-        fund_name=fund_name or fund_code,
-        report_date=report_date,
-        holdings=holdings,
-        total_count=len(holdings),
-    )
+    return holdings, report_date
+
+
+def get_fund_holdings(fund_code: str, date: str = "2026") -> FundHoldingsResponse:
+    """获取基金持仓数据（带季度缓存）
+
+    逻辑：
+    1. 计算当前预期季度
+    2. 查数据库缓存
+    3. 有缓存 → 直接返回
+    4. 无缓存 → 调用 API → 写入缓存 → 返回
+    """
+    # 计算当前预期季度
+    quarter, expected_report_date = get_current_quarter()
+    fund_name = _get_fund_name(fund_code)
+
+    db = SessionLocal()
+    try:
+        # 查缓存
+        cached = _get_cached_holdings(db, fund_code, quarter)
+        if cached:
+            return FundHoldingsResponse(
+                fund_code=fund_code,
+                fund_name=fund_name or fund_code,
+                report_date=cached[0]["report_date"],
+                holdings=[
+                    HoldingItem(
+                        stock_code=h["stock_code"],
+                        stock_name=h["stock_name"],
+                        weight=h["weight"],
+                    )
+                    for h in cached
+                ],
+                total_count=len(cached),
+            )
+
+        # 无缓存，调用 API
+        try:
+            holdings, report_date = _fetch_holdings_from_api(fund_code, date)
+        except ValueError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"接口调用失败: {e}")
+
+        # 写入缓存
+        query_code = _get_mapped_fund_code(fund_code)
+        _save_holdings_to_cache(db, fund_code, query_code, quarter, report_date, holdings)
+
+        return FundHoldingsResponse(
+            fund_code=fund_code,
+            fund_name=fund_name or fund_code,
+            report_date=report_date,
+            holdings=[
+                HoldingItem(
+                    stock_code=h["stock_code"],
+                    stock_name=h["stock_name"],
+                    weight=h["weight"],
+                )
+                for h in holdings
+            ],
+            total_count=len(holdings),
+        )
+    finally:
+        db.close()
 
 
 # ==================== 基金信息 ====================
@@ -132,7 +275,6 @@ def get_fund_return(fund_code: str) -> FundReturnResponse:
     returns: list[ReturnItem] = []
     for name, days in periods.items():
         target_date = now - timedelta(days=days)
-        # 找到最接近的日期
         mask = nav_df["date"] >= target_date
         if mask.any():
             start_nav = float(nav_df.loc[mask].iloc[0]["nav"])

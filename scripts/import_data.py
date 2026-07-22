@@ -130,13 +130,18 @@ def build_holdings_from_transactions(db, exclude_codes: set[str]):
                 "total_buy_shares": 0,
                 "total_buy_amount": 0,
                 "total_sell_amount": 0,
-                "first_buy_date": tx.trade_date,
+                "first_trade_date": tx.trade_date,
+                "last_trade_date": tx.trade_date,
             }
         if tx.type == "buy":
             fund_map[code]["total_buy_shares"] += float(tx.shares)
             fund_map[code]["total_buy_amount"] += float(tx.amount)
         elif tx.type == "sell":
             fund_map[code]["total_sell_amount"] += float(tx.amount)
+
+        # 更新最后交易日期
+        if tx.trade_date > fund_map[code]["last_trade_date"]:
+            fund_map[code]["last_trade_date"] = tx.trade_date
 
     for code, info in fund_map.items():
         total_shares = info["total_buy_shares"]
@@ -162,7 +167,8 @@ def build_holdings_from_transactions(db, exclude_codes: set[str]):
             fund_code=code,
             buy_nav=round(avg_nav, 4),
             shares=round(current_shares, 2),
-            buy_date=info["first_buy_date"],
+            first_trade_date=info["first_trade_date"],
+            last_trade_date=info["last_trade_date"],
             cost=round(cost, 2),
         )
         db.add(holding)
@@ -220,7 +226,8 @@ def import_holdings_summary(db, csv_path: str) -> set[str]:
                 fund_code=fund_code,
                 buy_nav=round(cost / shares, 4) if shares > 0 else 0,
                 shares=round(shares, 2),
-                buy_date=data_date,
+                first_trade_date=data_date,
+                last_trade_date=data_date,
                 cost=round(cost, 2),
                 note=note,
             )

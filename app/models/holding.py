@@ -26,7 +26,8 @@ class MyHolding(BaseModel):
     fund_name: Optional[str] = None
     buy_nav: float
     shares: float
-    buy_date: str
+    first_trade_date: str = Field(..., description="首次交易日期")
+    last_trade_date: str = Field(..., description="最后交易日期")
     cost: float = Field(..., description="买入成本")
     current_nav: Optional[float] = Field(None, description="当前净值")
     current_value: Optional[float] = Field(None, description="当前市值")

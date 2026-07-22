@@ -93,7 +93,8 @@ def _to_my_holding(db: Session, h: Holding) -> MyHolding:
         fund_name=fund_name,
         buy_nav=float(h.buy_nav),
         shares=float(h.shares),
-        buy_date=str(h.buy_date),
+        first_trade_date=str(h.first_trade_date),
+        last_trade_date=str(h.last_trade_date),
         cost=round(result["cost"], 2),
         current_nav=round(current_nav, 4) if current_nav else None,
         current_value=round(result["current_value"], 2) if result["current_value"] else None,
@@ -113,7 +114,8 @@ def create_holding(db: Session, req: HoldingCreate) -> MyHolding:
         fund_code=req.fund_code,
         buy_nav=req.buy_nav,
         shares=req.shares,
-        buy_date=req.buy_date,
+        first_trade_date=req.buy_date,
+        last_trade_date=req.buy_date,
         cost=cost,
     )
     db.add(holding)

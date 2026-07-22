@@ -21,7 +21,8 @@ class Holding(Base):
     fund_code = Column(String(6), nullable=False, index=True, comment="基金代码")
     buy_nav = Column(Numeric(10, 4), nullable=False, comment="买入均价")
     shares = Column(Numeric(14, 2), nullable=False, comment="持有份额")
-    buy_date = Column(Date, nullable=False, comment="首次买入日期")
+    first_trade_date = Column(Date, nullable=False, comment="首次交易日期")
+    last_trade_date = Column(Date, nullable=False, comment="最后交易日期")
     cost = Column(Numeric(14, 2), nullable=False, comment="买入成本")
     note = Column(Text, nullable=True, comment="备注")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
@@ -32,6 +33,20 @@ class Holding(Base):
 
     def __repr__(self):
         return f"<Holding {self.fund_code} shares={self.shares}>"
+
+
+class FundMapping(Base):
+    """基金映射表 — 联接基金映射到实际持仓的 ETF"""
+    __tablename__ = "fund_mapping"
+
+    id = Column(String(8), primary_key=True, default=gen_uuid)
+    fund_code = Column(String(6), nullable=False, unique=True, index=True, comment="原基金代码")
+    mapped_fund_code = Column(String(6), nullable=False, comment="实际持仓的 ETF 代码")
+    note = Column(Text, nullable=True, comment="备注")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+
+    def __repr__(self):
+        return f"<FundMapping {self.fund_code} -> {self.mapped_fund_code}>"
 
 
 class Transaction(Base):

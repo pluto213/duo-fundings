@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 TRANSACTIONS_CSV = os.path.join(DATA_DIR, "import_transactions.csv")
 SUMMARY_CSV = os.path.join(DATA_DIR, "import_holdings_summary.csv")
+MAPPING_CSV = os.path.join(DATA_DIR, "fund_mapping.csv")
 OUTPUT_CSV = os.path.join(DATA_DIR, "fund_holdings_init.csv")
 FAILED_CSV = os.path.join(DATA_DIR, "fund_holdings_failed.csv")
 HOLDINGS_CSV = os.path.join(DATA_DIR, "import_holdings.csv")
@@ -41,6 +42,26 @@ def get_all_fund_codes() -> list[str]:
     return sorted(codes)
 
 
+def load_fund_mapping() -> dict[str, str]:
+    """加载基金映射关系
+
+    Returns:
+        dict: {fund_code: mapped_fund_code}
+    """
+    mapping = {}
+    if not os.path.exists(MAPPING_CSV):
+        return mapping
+
+    with open(MAPPING_CSV, "r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            code = (row.get("fund_code") or "").strip()
+            mapped = (row.get("mapped_fund_code") or "").strip()
+            if code and mapped:
+                mapping[code] = mapped
+
+    return mapping
+
+
 def get_fund_name(fund_code: str) -> str:
     """获取基金名称"""
     import akshare as ak
@@ -54,7 +75,7 @@ def get_fund_name(fund_code: str) -> str:
     return fund_code
 
 
-def get_fund_holdings(fund_code: str, date: str = "2025") -> list[dict]:
+def get_fund_holdings(fund_code: str, date: str = "2026") -> list[dict]:
     """获取基金重仓股票（手动解析东方财富 API）
 
     Returns:
@@ -140,6 +161,13 @@ def main():
     # 获取所有基金代码
     fund_codes = get_all_fund_codes()
     print(f"共 {len(fund_codes)} 只基金")
+
+    # 加载映射关系
+    mapping = load_fund_mapping()
+    if mapping:
+        print(f"基金映射: {len(mapping)} 条")
+        for k, v in mapping.items():
+            print(f"  {k} → {v}")
     print()
 
     results = []
@@ -151,8 +179,13 @@ def main():
         fund_name = get_fund_name(code)
         print(f"{fund_name}", end=" ")
 
+        # 检查是否有映射
+        query_code = mapping.get(code, code)
+        if query_code != code:
+            print(f" → {query_code}", end=" ")
+
         # 获取持仓
-        holdings = get_fund_holdings(code)
+        holdings = get_fund_holdings(query_code)
 
         if not holdings:
             print("❌ 无数据")
@@ -208,6 +241,11 @@ def main():
             writer = csv.DictWriter(f, fieldnames=["fund_code", "fund_name", "stock_code", "stock_name", "weight", "status"])
             writer.writeheader()
             writer.writerows(failed_results)
+    else:
+        # 没有失败的基金，删除旧的失败文件
+        if os.path.exists(FAILED_CSV):
+            os.remove(FAILED_CSV)
+            print(f"删除旧文件: {FAILED_CSV}")
 
     # 生成 import_holdings.csv（所有基金代码）
     print(f"写入文件: {HOLDINGS_CSV}")

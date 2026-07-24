@@ -75,10 +75,11 @@ def get_fund_name(fund_code: str) -> str:
     return fund_code
 
 
-def get_fund_holdings(fund_code: str, date: str = "2026") -> list[dict]:
+def get_fund_holdings(fund_code: str, date: str = "2026") -> tuple[list[dict], str]:
     """获取基金重仓股票（手动解析东方财富 API）
 
     Returns:
+        (持仓列表, 报告期日期)
         list of dict: [{"stock_code": "600519", "stock_name": "贵州茅台", "weight": 0.095}, ...]
     """
     try:
@@ -101,16 +102,20 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> list[dict]:
         # 提取 HTML 内容
         html_match = re.search(r'content:"(.*?)"', content, re.DOTALL)
         if not html_match:
-            return []
+            return [], None
 
         html = html_match.group(1)
         if "暂无" in html or not html.strip():
-            return []
+            return [], None
+
+        # 提取报告日期
+        report_date_match = re.search(r'截止至：.*?(\d{4}-\d{2}-\d{2})', html)
+        report_date = report_date_match.group(1) if report_date_match else None
 
         # 解析表格
         tables = pd.read_html(StringIO(html))
         if not tables:
-            return []
+            return [], None
 
         df = tables[0]
 
@@ -124,7 +129,7 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> list[dict]:
         df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
 
         if "stock_code" not in df.columns or "weight" not in df.columns:
-            return []
+            return [], None
 
         # 处理 weight
         df["weight"] = (
@@ -147,10 +152,10 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> list[dict]:
                 "weight": round(float(w), 4),
             })
 
-        return results
+        return results, report_date
 
     except Exception as e:
-        return [{"error": str(e)}]
+        return [{"error": str(e)}], None
 
 
 def main():
@@ -185,13 +190,14 @@ def main():
             print(f" → {query_code}", end=" ")
 
         # 获取持仓
-        holdings = get_fund_holdings(query_code)
+        holdings, report_date = get_fund_holdings(query_code)
 
         if not holdings:
             print("❌ 无数据")
             results.append({
                 "fund_code": code,
                 "fund_name": fund_name,
+                "report_date": "",
                 "stock_code": "",
                 "stock_name": "数据获取失败，请手动补充",
                 "weight": "",
@@ -202,17 +208,19 @@ def main():
             results.append({
                 "fund_code": code,
                 "fund_name": fund_name,
+                "report_date": "",
                 "stock_code": "",
                 "stock_name": f"错误: {holdings[0]['error'][:50]}",
                 "weight": "",
                 "status": "error",
             })
         else:
-            print(f"✓ {len(holdings)} 只重仓股")
+            print(f"✓ {len(holdings)} 只重仓股 (报告期: {report_date})")
             for h in holdings:
                 results.append({
                     "fund_code": code,
                     "fund_name": fund_name,
+                    "report_date": report_date or "",
                     "stock_code": h["stock_code"],
                     "stock_name": h["stock_name"],
                     "weight": h["weight"],
@@ -230,7 +238,7 @@ def main():
     print()
     print(f"写入文件: {OUTPUT_CSV}")
     with open(OUTPUT_CSV, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["fund_code", "fund_name", "stock_code", "stock_name", "weight", "status"])
+        writer = csv.DictWriter(f, fieldnames=["fund_code", "fund_name", "report_date", "stock_code", "stock_name", "weight", "status"])
         writer.writeheader()
         writer.writerows(ok_results)
 
@@ -238,7 +246,7 @@ def main():
     if failed_results:
         print(f"写入文件: {FAILED_CSV}")
         with open(FAILED_CSV, "w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["fund_code", "fund_name", "stock_code", "stock_name", "weight", "status"])
+            writer = csv.DictWriter(f, fieldnames=["fund_code", "fund_name", "report_date", "stock_code", "stock_name", "weight", "status"])
             writer.writeheader()
             writer.writerows(failed_results)
     else:

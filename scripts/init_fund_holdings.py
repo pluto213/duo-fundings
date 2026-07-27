@@ -111,6 +111,13 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> tuple[list[dict], s
     if df["weight"].max() > 1:
         df["weight"] = df["weight"] / 100
 
+    # 只取最新季度的数据（akshare 可能返回多个季度）
+    if "quarter_info" in df.columns:
+        quarters = df["quarter_info"].unique()
+        latest_quarter = sorted(quarters, reverse=True)[0]
+        df = df[df["quarter_info"] == latest_quarter].reset_index(drop=True)
+        print(f"  选择最新季度: {latest_quarter}")
+
     # 提取报告日期
     report_date = None
     if "quarter_info" in df.columns:

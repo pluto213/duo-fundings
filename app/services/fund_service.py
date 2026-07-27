@@ -120,6 +120,14 @@ def _fetch_holdings_from_api(fund_code: str, year: str) -> tuple[list[dict], str
         if df["weight"].max() > 1:
             df["weight"] = df["weight"] / 100
 
+    # 只取最新季度的数据（akshare 可能返回多个季度）
+    if "quarter_info" in df.columns:
+        # 获取所有季度，按降序排列，取最新的
+        quarters = df["quarter_info"].unique()
+        latest_quarter = sorted(quarters, reverse=True)[0]
+        df = df[df["quarter_info"] == latest_quarter].reset_index(drop=True)
+        logger.info(f"[{fund_code}] 选择最新季度: {latest_quarter}")
+
     # 提取报告日期（从季度信息中解析）
     report_date = None
     if "quarter_info" in df.columns:

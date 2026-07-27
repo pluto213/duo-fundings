@@ -4,6 +4,7 @@
 文档: http://127.0.0.1:8000/docs
 """
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,6 +12,12 @@ from fastapi import FastAPI
 from app.api.fund import router as fund_router
 from app.api.holding import router as holding_router
 from app.db import init_db
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 
 @asynccontextmanager

@@ -10,10 +10,9 @@ import os
 import re
 import sys
 import time
-from io import StringIO
 
+import akshare as ak
 import pandas as pd
-import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -76,86 +75,72 @@ def get_fund_name(fund_code: str) -> str:
 
 
 def get_fund_holdings(fund_code: str, date: str = "2026") -> tuple[list[dict], str]:
-    """获取基金重仓股票（手动解析东方财富 API）
+    """获取基金重仓股票（使用 akshare）
 
     Returns:
         (持仓列表, 报告期日期)
         list of dict: [{"stock_code": "600519", "stock_name": "贵州茅台", "weight": 0.095}, ...]
     """
     try:
-        url = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
-        params = {
-            "type": "jjcc",
-            "code": fund_code,
-            "topline": "10",
-            "year": date,
-            "month": "",
-        }
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://fundf10.eastmoney.com/",
-        }
-
-        r = requests.get(url, params=params, headers=headers, timeout=15)
-        content = r.text
-
-        # 提取 HTML 内容
-        html_match = re.search(r'content:"(.*?)"', content, re.DOTALL)
-        if not html_match:
-            return [], None
-
-        html = html_match.group(1)
-        if "暂无" in html or not html.strip():
-            return [], None
-
-        # 提取报告日期
-        report_date_match = re.search(r'截止至：.*?(\d{4}-\d{2}-\d{2})', html)
-        report_date = report_date_match.group(1) if report_date_match else None
-
-        # 解析表格
-        tables = pd.read_html(StringIO(html))
-        if not tables:
-            return [], None
-
-        df = tables[0]
-
-        # 标准化列名
-        col_map = {
-            "股票代码": "stock_code",
-            "股票名称": "stock_name",
-            "占净值 比例": "weight",
-            "占净值比例": "weight",
-        }
-        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-
-        if "stock_code" not in df.columns or "weight" not in df.columns:
-            return [], None
-
-        # 处理 weight
-        df["weight"] = (
-            df["weight"]
-            .astype(str)
-            .str.replace("%", "", regex=False)
-        )
-        df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
-        if df["weight"].max() > 1:
-            df["weight"] = df["weight"] / 100
-
-        results = []
-        for _, row in df.iterrows():
-            w = row.get("weight", 0)
-            if pd.isna(w) or w <= 0:
-                continue
-            results.append({
-                "stock_code": str(row.get("stock_code", "")),
-                "stock_name": str(row.get("stock_name", "")),
-                "weight": round(float(w), 4),
-            })
-
-        return results, report_date
-
+        df = ak.fund_portfolio_hold_em(symbol=fund_code, date=date)
     except Exception as e:
         return [{"error": str(e)}], None
+
+    if df is None or df.empty:
+        return [], None
+
+    # 标准化列名
+    col_map = {
+        "股票代码": "stock_code",
+        "股票名称": "stock_name",
+        "占净值比例": "weight",
+        "季度": "quarter_info",
+    }
+    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+
+    if "stock_code" not in df.columns or "weight" not in df.columns:
+        return [], None
+
+    # 处理 weight
+    df["weight"] = (
+        df["weight"]
+        .astype(str)
+        .str.replace("%", "", regex=False)
+    )
+    df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
+    if df["weight"].max() > 1:
+        df["weight"] = df["weight"] / 100
+
+    # 提取报告日期
+    report_date = None
+    if "quarter_info" in df.columns:
+        quarter_info = str(df["quarter_info"].iloc[0])
+        # 从季度信息推算
+        year_match = re.search(r'(\d{4})年(\d)季度', quarter_info)
+        if year_match:
+            y = int(year_match.group(1))
+            q = int(year_match.group(2))
+            if q == 1:
+                report_date = f"{y}-03-31"
+            elif q == 2:
+                report_date = f"{y}-06-30"
+            elif q == 3:
+                report_date = f"{y}-09-30"
+            elif q == 4:
+                report_date = f"{y}-12-31"
+
+    results = []
+    for _, row in df.iterrows():
+        w = row.get("weight", 0)
+        if pd.isna(w) or w <= 0:
+            continue
+        results.append({
+            "stock_code": str(row.get("stock_code", "")),
+            "stock_name": str(row.get("stock_name", "")),
+            "weight": round(float(w), 4),
+        })
+
+    return results, report_date
 
 
 def main():

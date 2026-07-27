@@ -1,15 +1,16 @@
 """基金数据服务层 — 封装 akshare 调用，支持持仓缓存"""
 
+import logging
 import re
 from datetime import date, datetime
-from io import StringIO
 from typing import Optional
 
 import akshare as ak
 import numpy as np
 import pandas as pd
-import requests
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.db import SessionLocal
 from app.models.db_models import FundMapping, FundStockHolding
@@ -63,7 +64,7 @@ def _save_holdings_to_cache(db: Session, fund_code: str, query_code: str,
                              quarter: str, report_date: str, holdings: list[dict]):
     """保存持仓数据到缓存"""
     # 删除旧数据
-    db.query(FundStockHolding).filter(
+    deleted = db.query(FundStockHolding).filter(
         FundStockHolding.fund_code == fund_code,
         FundStockHolding.quarter == quarter,
     ).delete()
@@ -82,61 +83,35 @@ def _save_holdings_to_cache(db: Session, fund_code: str, query_code: str,
         db.add(record)
 
     db.commit()
+    logger.info(f"[{fund_code}] 缓存已更新: 删除 {deleted} 条旧记录, 插入 {len(holdings)} 条新记录")
 
 
 def _fetch_holdings_from_api(fund_code: str, year: str) -> tuple[list[dict], str]:
-    """从东方财富 API 获取持仓数据
+    """从 akshare 获取持仓数据
 
     Returns:
         (持仓列表, 报告期日期)
     """
     query_code = _get_mapped_fund_code(fund_code)
 
-    url = "https://fundf10.eastmoney.com/FundArchivesDatas.aspx"
-    params = {
-        "type": "jjcc",
-        "code": query_code,
-        "topline": "10",
-        "year": year,
-        "month": "",
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://fundf10.eastmoney.com/",
-    }
+    try:
+        df = ak.fund_portfolio_hold_em(symbol=query_code, date=year)
+    except Exception as e:
+        raise RuntimeError(f"akshare 接口调用失败: {e}")
 
-    r = requests.get(url, params=params, headers=headers, timeout=15)
-    content = r.text
-
-    # 提取 HTML 内容
-    html_match = re.search(r'content:"(.*?)"', content, re.DOTALL)
-    if not html_match:
+    if df is None or df.empty:
         raise ValueError(f"基金 {fund_code} 在 {year} 年无持仓数据")
-
-    html = html_match.group(1)
-    if "暂无" in html or not html.strip():
-        raise ValueError(f"基金 {fund_code} 在 {year} 年无持仓数据")
-
-    # 解析表格
-    tables = pd.read_html(StringIO(html))
-    if not tables:
-        raise ValueError(f"基金 {fund_code} 在 {year} 年无持仓数据")
-
-    df = tables[0]  # 取最新季度
-
-    # 提取报告日期
-    report_date_match = re.search(r'截止至：.*?(\d{4}-\d{2}-\d{2})', html)
-    report_date = report_date_match.group(1) if report_date_match else None
 
     # 标准化列名
     col_map = {
         "股票代码": "stock_code",
         "股票名称": "stock_name",
-        "占净值 比例": "weight",
         "占净值比例": "weight",
+        "季度": "quarter_info",
     }
     df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
 
+    # 处理 weight
     if "weight" in df.columns:
         df["weight"] = pd.to_numeric(
             df["weight"].astype(str).str.replace("%", "", regex=False),
@@ -144,6 +119,32 @@ def _fetch_holdings_from_api(fund_code: str, year: str) -> tuple[list[dict], str
         )
         if df["weight"].max() > 1:
             df["weight"] = df["weight"] / 100
+
+    # 提取报告日期（从季度信息中解析）
+    report_date = None
+    if "quarter_info" in df.columns:
+        quarter_info = str(df["quarter_info"].iloc[0])
+        # 例如: "2026年1季度股票投资明细" 或 "截止至：2026-06-30"
+        date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', quarter_info)
+        if date_match:
+            report_date = date_match.group(0)
+        else:
+            # 从季度信息推算
+            year_match = re.search(r'(\d{4})年(\d)季度', quarter_info)
+            if year_match:
+                y = int(year_match.group(1))
+                q = int(year_match.group(2))
+                if q == 1:
+                    report_date = f"{y}-03-31"
+                elif q == 2:
+                    report_date = f"{y}-06-30"
+                elif q == 3:
+                    report_date = f"{y}-09-30"
+                elif q == 4:
+                    report_date = f"{y}-12-31"
+
+    if not report_date:
+        report_date = f"{year}-12-31"  # 默认
 
     holdings = []
     for _, row in df.iterrows():
@@ -172,11 +173,14 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> FundHoldingsRespons
     quarter, expected_report_date = get_current_quarter()
     fund_name = _get_fund_name(fund_code)
 
+    logger.info(f"[{fund_code}] 查询持仓, 季度={quarter}")
+
     db = SessionLocal()
     try:
         # 查缓存
         cached = _get_cached_holdings(db, fund_code, quarter)
         if cached:
+            logger.info(f"[{fund_code}] 缓存命中, {len(cached)} 条持仓, 报告期={cached[0]['report_date']}")
             return FundHoldingsResponse(
                 fund_code=fund_code,
                 fund_name=fund_name or fund_code,
@@ -193,6 +197,7 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> FundHoldingsRespons
             )
 
         # 无缓存，调用 API
+        logger.info(f"[{fund_code}] 缓存未命中, 调用 akshare API...")
         try:
             holdings, report_date = _fetch_holdings_from_api(fund_code, date)
         except ValueError:
@@ -203,6 +208,7 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> FundHoldingsRespons
         # 写入缓存
         query_code = _get_mapped_fund_code(fund_code)
         _save_holdings_to_cache(db, fund_code, query_code, quarter, report_date, holdings)
+        logger.info(f"[{fund_code}] API 返回 {len(holdings)} 条持仓, 报告期={report_date}, 已写入缓存")
 
         return FundHoldingsResponse(
             fund_code=fund_code,

@@ -1,3 +1,5 @@
+# source /Users/loveis/VSCodeProjects/duo-fundings/venv/bin/activate
+
 启动命令：
 
 # 激活虚拟环境

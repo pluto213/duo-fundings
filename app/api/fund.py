@@ -28,10 +28,10 @@ router = APIRouter(prefix="/fund", tags=["基金"])
 )
 async def fund_holdings(
     code: str = Query(..., min_length=6, max_length=6, description="6 位基金代码"),
-    date: str = Query("2025", description="报告期年份"),
+    year: str = Query("2026", description="年份，如 2026"),
 ):
     try:
-        return get_fund_holdings(code, date=date)
+        return get_fund_holdings(code, year=year)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:

@@ -74,7 +74,7 @@ def get_fund_name(fund_code: str) -> str:
     return fund_code
 
 
-def get_fund_holdings(fund_code: str, date: str = "2026") -> tuple[list[dict], str]:
+def get_fund_holdings(fund_code: str, year: str = "2026") -> tuple[list[dict], str]:
     """获取基金重仓股票（使用 akshare）
 
     Returns:
@@ -82,7 +82,7 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> tuple[list[dict], s
         list of dict: [{"stock_code": "600519", "stock_name": "贵州茅台", "weight": 0.095}, ...]
     """
     try:
-        df = ak.fund_portfolio_hold_em(symbol=fund_code, date=date)
+        df = ak.fund_portfolio_hold_em(symbol=fund_code, date=year)
     except Exception as e:
         return [{"error": str(e)}], None
 

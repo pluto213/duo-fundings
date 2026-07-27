@@ -168,7 +168,7 @@ def _fetch_holdings_from_api(fund_code: str, year: str) -> tuple[list[dict], str
     return holdings, report_date
 
 
-def get_fund_holdings(fund_code: str, date: str = "2026") -> FundHoldingsResponse:
+def get_fund_holdings(fund_code: str, year: str = "2026") -> FundHoldingsResponse:
     """获取基金持仓数据（带季度缓存）
 
     逻辑：
@@ -207,7 +207,7 @@ def get_fund_holdings(fund_code: str, date: str = "2026") -> FundHoldingsRespons
         # 无缓存，调用 API
         logger.info(f"[{fund_code}] 缓存未命中, 调用 akshare API...")
         try:
-            holdings, report_date = _fetch_holdings_from_api(fund_code, date)
+            holdings, report_date = _fetch_holdings_from_api(fund_code, year)
         except ValueError:
             raise
         except Exception as e:

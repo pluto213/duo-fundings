@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 from app.db import SessionLocal
 from app.models.db_models import FundMapping, FundStockHolding
 from app.models.fund import (
+    FundEstimatedReturnResponse,
     FundHoldingsResponse,
     FundInfoResponse,
     FundNavResponse,
@@ -23,6 +24,7 @@ from app.models.fund import (
     HoldingItem,
     NavPoint,
     ReturnItem,
+    StockReturnItem,
 )
 from app.utils import get_current_quarter
 
@@ -234,6 +236,119 @@ def get_fund_holdings(fund_code: str, year: str = "2026") -> FundHoldingsRespons
         )
     finally:
         db.close()
+
+
+# ==================== 估算收益 ====================
+
+def _get_stock_realtime(stock_code: str) -> dict:
+    """获取股票实时行情（涨跌幅）
+
+    Returns:
+        dict: {"price": 最新价, "change_pct": 涨跌幅%, "time": 获取时间}
+    """
+    import subprocess
+    import json
+    from datetime import datetime
+
+    symbol = stock_code.zfill(6)
+
+    # 判断市场前缀
+    if symbol.startswith('6'):
+        secid = f"1.{symbol}"
+    else:
+        secid = f"0.{symbol}"
+
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f43,f170,f86"
+
+    try:
+        result = subprocess.run(['curl', '-s', url], capture_output=True, text=True, timeout=10)
+        data = json.loads(result.stdout)
+
+        if data.get('data'):
+            d = data['data']
+            price = d.get('f43', 0) / 100 if d.get('f43') else None
+            change_pct = d.get('f170', 0) / 100 if d.get('f170') else None
+            # f86 是价格对应的时间戳
+            price_time = datetime.fromtimestamp(d['f86']).strftime("%Y-%m-%d %H:%M:%S") if d.get('f86') else None
+            return {
+                "price": price,
+                "change_pct": change_pct,
+                "time": price_time,
+            }
+    except Exception as e:
+        logger.warning(f"[{stock_code}] 获取实时行情失败: {e}")
+
+    return {"price": None, "change_pct": None, "time": None}
+
+
+def get_fund_estimated_return(fund_code: str) -> FundEstimatedReturnResponse:
+    """估算基金今日实时收益
+
+    逻辑：
+    1. 获取基金持仓（从缓存）
+    2. 获取每只股票的实时涨跌幅
+    3. 按持仓权重加权计算基金今日估算涨跌幅
+    """
+    # 获取持仓（使用缓存）
+    holdings_response = get_fund_holdings(fund_code)
+    fund_name = holdings_response.fund_name
+    report_date = holdings_response.report_date
+
+    if not holdings_response.holdings:
+        return FundEstimatedReturnResponse(
+            fund_code=fund_code,
+            fund_name=fund_name,
+            report_date=report_date,
+            estimated_return=None,
+            holdings=[],
+        )
+
+    logger.info(f"[{fund_code}] 估算今日收益, 持仓数={len(holdings_response.holdings)}")
+
+    # 获取每只股票的实时涨跌幅
+    stock_returns: list[StockReturnItem] = []
+    weighted_return = 0.0
+    total_weight = 0.0
+
+    for h in holdings_response.holdings:
+        realtime = _get_stock_realtime(h.stock_code)
+        price = realtime.get("price")
+        change_pct = realtime.get("change_pct")
+        price_time = realtime.get("time")
+
+        if change_pct is not None:
+            # 涨跌幅是百分比，转为小数
+            stock_return = change_pct / 100
+            weighted_return += stock_return * h.weight
+            total_weight += h.weight
+        else:
+            stock_return = None
+
+        stock_returns.append(StockReturnItem(
+            stock_code=h.stock_code,
+            stock_name=h.stock_name,
+            weight=h.weight,
+            report_price=None,
+            current_price=round(price, 2) if price else None,
+            price_time=price_time,
+            stock_return=round(stock_return, 4) if stock_return is not None else None,
+        ))
+
+    # 计算估算收益率
+    estimated_return = weighted_return / total_weight if total_weight > 0 else None
+
+    if estimated_return is not None:
+        logger.info(f"[{fund_code}] 今日估算涨幅: {estimated_return:.2%}")
+    else:
+        logger.info(f"[{fund_code}] 无法估算收益")
+
+    return FundEstimatedReturnResponse(
+        fund_code=fund_code,
+        fund_name=fund_name,
+        report_date=report_date,
+        estimated_return=round(estimated_return, 4) if estimated_return is not None else None,
+        holdings=stock_returns,
+    )
 
 
 # ==================== 基金信息 ====================

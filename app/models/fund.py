@@ -89,6 +89,28 @@ class FundNavResponse(BaseModel):
     total_count: int = 0
 
 
+# ==================== 估算收益 ====================
+
+class StockReturnItem(BaseModel):
+    """单只股票的收益情况"""
+    stock_code: str = Field(..., description="股票代码")
+    stock_name: str = Field(..., description="股票名称")
+    weight: float = Field(..., description="持仓占比")
+    report_price: Optional[float] = Field(None, description="报告期收盘价")
+    current_price: Optional[float] = Field(None, description="当前价格")
+    price_time: Optional[str] = Field(None, description="价格获取时间")
+    stock_return: Optional[float] = Field(None, description="个股涨跌幅（小数）")
+
+
+class FundEstimatedReturnResponse(BaseModel):
+    """基金估算收益响应"""
+    fund_code: str = Field(..., description="基金代码")
+    fund_name: Optional[str] = Field(None, description="基金名称")
+    report_date: Optional[str] = Field(None, description="持仓报告期")
+    estimated_return: Optional[float] = Field(None, description="估算收益率")
+    holdings: list[StockReturnItem] = Field(default_factory=list, description="各股票收益明细")
+
+
 # ==================== 错误 ====================
 
 class ErrorResponse(BaseModel):

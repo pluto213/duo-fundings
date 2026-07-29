@@ -2,7 +2,6 @@
 
 from datetime import date
 
-
 def get_current_quarter() -> tuple[str, str]:
     """根据当前日期计算预期的最新季度
 

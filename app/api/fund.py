@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException, Path, Query
 
 from app.models.fund import (
+    FundEstimatedReturnResponse,
     FundHoldingsResponse,
     FundInfoResponse,
     FundNavResponse,
@@ -10,6 +11,7 @@ from app.models.fund import (
     FundRiskResponse,
 )
 from app.services.fund_service import (
+    get_fund_estimated_return,
     get_fund_holdings,
     get_fund_info,
     get_fund_nav,
@@ -32,6 +34,23 @@ async def fund_holdings(
 ):
     try:
         return get_fund_holdings(code, year=year)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get(
+    "/{code}/estimated-return",
+    response_model=FundEstimatedReturnResponse,
+    summary="基金今日估算收益",
+    description="基于持仓股票的实时涨跌幅，估算基金今日收益",
+)
+async def fund_estimated_return(
+    code: str = Path(..., min_length=6, max_length=6),
+):
+    try:
+        return get_fund_estimated_return(code)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:

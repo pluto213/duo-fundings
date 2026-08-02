@@ -1,6 +1,6 @@
 """用户持仓管理 API 路由"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -40,11 +40,14 @@ async def add_holding(req: HoldingCreate, db: Session = Depends(get_db)):
     "",
     response_model=HoldingListResponse,
     summary="持仓列表",
-    description="查看所有持仓，包含每只基金的实时净值和收益率",
+    description="查看所有持仓，包含每只基金的净值和收益率。设置 with_estimate=true 可获取今日估算涨幅（较慢）",
 )
-async def get_holdings(db: Session = Depends(get_db)):
+async def get_holdings(
+    with_estimate: bool = Query(False, description="是否包含今日估算涨幅"),
+    db: Session = Depends(get_db),
+):
     try:
-        return list_holdings(db)
+        return list_holdings(db, with_estimate=with_estimate)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 

@@ -1,12 +1,13 @@
-"""用户持仓管理服务层 — 数据库版本"""
+"""用户持仓管理服务层 — 数据库版本，支持净值缓存和并行请求"""
 
-from datetime import date
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime
 from typing import Optional
 
-import akshare as ak
 from sqlalchemy.orm import Session
 
-from app.models.db_models import Holding, Transaction
+from app.models.db_models import FundInfo, FundNavCache, Holding, Transaction
 from app.models.holding import (
     HoldingCreate,
     HoldingListResponse,
@@ -14,39 +15,35 @@ from app.models.holding import (
     MyHolding,
     PortfolioSummary,
 )
+from app.services.fund_service import calc_fund_estimated_return
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== 内部工具 ====================
 
-def _get_current_nav(fund_code: str) -> Optional[float]:
-    """获取基金最新净值"""
-    try:
-        df = ak.fund_open_fund_info_em(symbol=fund_code, indicator="单位净值走势")
-        if df is not None and not df.empty:
-            return float(df.iloc[-1]["单位净值"])
-    except Exception:
-        pass
+def _get_fund_name(db: Session, fund_code: str) -> Optional[str]:
+    """获取基金名称（优先从缓存读取）"""
+    fund_info = db.query(FundInfo).filter(FundInfo.fund_code == fund_code).first()
+    if fund_info:
+        return fund_info.fund_name
     return None
 
 
-def _get_fund_name(fund_code: str) -> Optional[str]:
-    """获取基金名称"""
-    try:
-        df = ak.fund_individual_basic_info_xq(symbol=fund_code)
-        if df is not None and not df.empty:
-            mapping = dict(zip(df["item"], df["value"]))
-            return str(mapping.get("基金名称", fund_code))
-    except Exception:
-        pass
+def _get_cached_nav(db: Session, fund_code: str) -> Optional[tuple[float, str]]:
+    """从缓存获取基金净值
+
+    Returns:
+        (净值, 净值日期) 或 None
+    """
+    nav_cache = db.query(FundNavCache).filter(FundNavCache.fund_code == fund_code).first()
+    if nav_cache:
+        return float(nav_cache.nav), str(nav_cache.nav_date)
     return None
 
 
 def _calc_return(db: Session, h: Holding, current_nav: float) -> dict:
-    """计算持仓收益
-
-    Returns:
-        dict with keys: cost, current_value, profit, return_rate
-    """
+    """计算持仓收益"""
     cost = float(h.cost)
     shares = float(h.shares)
     current_value = current_nav * shares if current_nav else None
@@ -57,11 +54,8 @@ def _calc_return(db: Session, h: Holding, current_nav: float) -> dict:
     profit = current_value - cost
 
     if cost > 0:
-        # 正常情况：收益 / 成本
         return_rate = profit / cost
     elif cost < 0:
-        # 成本为负：已收回本金，用原始投入计算
-        # 原始投入 = 买入总金额（从 transactions 汇总）
         total_buy = sum(
             float(tx.amount)
             for tx in db.query(Transaction).filter(
@@ -81,11 +75,20 @@ def _calc_return(db: Session, h: Holding, current_nav: float) -> dict:
     }
 
 
-def _to_my_holding(db: Session, h: Holding) -> MyHolding:
-    """将 ORM 对象转为响应模型，补充实时数据"""
-    current_nav = _get_current_nav(h.fund_code)
-    fund_name = _get_fund_name(h.fund_code)
+def _to_my_holding(db: Session, h: Holding, with_estimate: bool = False) -> MyHolding:
+    """将 ORM 对象转为响应模型"""
+    # 从缓存获取净值
+    nav_result = _get_cached_nav(db, h.fund_code)
+    current_nav = nav_result[0] if nav_result else None
+    nav_date = nav_result[1] if nav_result else None
+
+    fund_name = _get_fund_name(db, h.fund_code)
     result = _calc_return(db, h, current_nav)
+
+    # 估算收益（可选）
+    estimated_return = None
+    if with_estimate:
+        estimated_return = calc_fund_estimated_return(h.fund_code)
 
     return MyHolding(
         id=h.id,
@@ -97,9 +100,11 @@ def _to_my_holding(db: Session, h: Holding) -> MyHolding:
         last_trade_date=str(h.last_trade_date),
         cost=round(result["cost"], 2),
         current_nav=round(current_nav, 4) if current_nav else None,
+        nav_date=nav_date,
         current_value=round(result["current_value"], 2) if result["current_value"] else None,
         profit=round(result["profit"], 2) if result["profit"] is not None else None,
         return_rate=round(result["return_rate"], 4) if result["return_rate"] is not None else None,
+        estimated_return=round(estimated_return, 4) if estimated_return is not None else None,
     )
 
 
@@ -109,7 +114,6 @@ def create_holding(db: Session, req: HoldingCreate) -> MyHolding:
     """新增持仓"""
     cost = req.buy_nav * req.shares
 
-    # 创建持仓记录
     holding = Holding(
         fund_code=req.fund_code,
         buy_nav=req.buy_nav,
@@ -119,9 +123,8 @@ def create_holding(db: Session, req: HoldingCreate) -> MyHolding:
         cost=cost,
     )
     db.add(holding)
-    db.flush()  # 拿到 holding.id
+    db.flush()
 
-    # 创建交易流水
     tx = Transaction(
         holding_id=holding.id,
         fund_code=req.fund_code,
@@ -138,10 +141,28 @@ def create_holding(db: Session, req: HoldingCreate) -> MyHolding:
     return _to_my_holding(db, holding)
 
 
-def list_holdings(db: Session) -> HoldingListResponse:
+def list_holdings(db: Session, with_estimate: bool = False) -> HoldingListResponse:
     """查询所有持仓"""
     holdings = db.query(Holding).all()
-    items = [_to_my_holding(db, h) for h in holdings]
+
+    if with_estimate:
+        # 并行获取估算收益
+        items = []
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                executor.submit(_to_my_holding, db, h, True): h
+                for h in holdings
+            }
+            for future in as_completed(futures):
+                try:
+                    items.append(future.result())
+                except Exception as e:
+                    h = futures[future]
+                    logger.error(f"[{h.fund_code}] 处理失败: {e}")
+                    items.append(_to_my_holding(db, h, False))
+    else:
+        items = [_to_my_holding(db, h) for h in holdings]
+
     return HoldingListResponse(holdings=items, total_count=len(items))
 
 
@@ -153,12 +174,10 @@ def update_holding(db: Session, holding_id: str, req: HoldingUpdate) -> MyHoldin
 
     old_shares = float(holding.shares)
 
-    # 更新份额
     if req.shares is not None:
         new_shares = req.shares
         diff = new_shares - old_shares
 
-        # 记录交易流水
         tx_type = "buy" if diff > 0 else "sell"
         tx = Transaction(
             holding_id=holding.id,
@@ -174,7 +193,6 @@ def update_holding(db: Session, holding_id: str, req: HoldingUpdate) -> MyHoldin
         holding.shares = new_shares
         holding.cost = float(holding.buy_nav) * new_shares
 
-    # 更新买入净值
     if req.buy_nav is not None:
         holding.buy_nav = req.buy_nav
         holding.cost = req.buy_nav * float(holding.shares)
@@ -208,7 +226,6 @@ def get_portfolio_summary(db: Session) -> PortfolioSummary:
     total_value = sum(h.current_value for h in items if h.current_value is not None)
     total_profit = total_value - total_cost
 
-    # 收益率：用原始投入计算（避免负成本干扰）
     total_buy = sum(
         float(tx.amount)
         for tx in db.query(Transaction).filter(Transaction.type == "buy").all()

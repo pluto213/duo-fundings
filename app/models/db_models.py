@@ -49,6 +49,34 @@ class FundMapping(Base):
         return f"<FundMapping {self.fund_code} -> {self.mapped_fund_code}>"
 
 
+class FundInfo(Base):
+    """基金基本信息缓存表"""
+    __tablename__ = "fund_info"
+
+    fund_code = Column(String(6), primary_key=True, comment="基金代码")
+    fund_name = Column(String(100), nullable=False, comment="基金名称")
+    fund_type = Column(String(50), nullable=True, comment="基金类型")
+    company = Column(String(100), nullable=True, comment="基金公司")
+    manager = Column(String(50), nullable=True, comment="基金经理")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+    def __repr__(self):
+        return f"<FundInfo {self.fund_code} {self.fund_name}>"
+
+
+class FundNavCache(Base):
+    """基金净值缓存表 — 每天更新一次"""
+    __tablename__ = "fund_nav_cache"
+
+    fund_code = Column(String(6), primary_key=True, comment="基金代码")
+    nav = Column(Numeric(10, 4), nullable=False, comment="最新净值")
+    nav_date = Column(Date, nullable=False, comment="净值日期")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="缓存更新时间")
+
+    def __repr__(self):
+        return f"<FundNavCache {self.fund_code} {self.nav} {self.nav_date}>"
+
+
 class FundStockHolding(Base):
     """基金股票持仓缓存表 — 按季度存储"""
     __tablename__ = "fund_stock_holdings"

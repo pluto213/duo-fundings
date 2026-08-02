@@ -281,13 +281,79 @@ def _get_stock_realtime(stock_code: str) -> dict:
     return {"price": None, "change_pct": None, "time": None}
 
 
-def get_fund_estimated_return(fund_code: str) -> FundEstimatedReturnResponse:
-    """估算基金今日实时收益
+def calc_fund_estimated_return(fund_code: str) -> Optional[float]:
+    """计算基金今日估算涨幅（公共函数）
 
     逻辑：
     1. 获取基金持仓（从缓存）
-    2. 获取每只股票的实时涨跌幅
+    2. 并行获取每只股票的实时涨跌幅
     3. 按持仓权重加权计算基金今日估算涨跌幅
+
+    Returns:
+        估算涨幅（小数）或 None
+    """
+    from app.db import SessionLocal
+    from app.models.db_models import FundStockHolding
+    from app.utils import get_current_quarter
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    quarter, _ = get_current_quarter()
+
+    db = SessionLocal()
+    try:
+        # 获取基金持仓
+        holdings = db.query(FundStockHolding).filter(
+            FundStockHolding.fund_code == fund_code,
+            FundStockHolding.quarter == quarter,
+        ).all()
+
+        if not holdings:
+            return None
+
+        # 并行获取所有股票的实时行情
+        stock_codes = [h.stock_code for h in holdings]
+        stock_returns = {}
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {
+                executor.submit(_get_stock_realtime, code): code
+                for code in stock_codes
+            }
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    result = future.result()
+                    if result.get('change_pct') is not None:
+                        stock_returns[code] = result['change_pct'] / 100
+                except Exception:
+                    pass
+
+        # 计算加权收益
+        weighted_return = 0.0
+        total_weight = 0.0
+
+        for h in holdings:
+            if h.stock_code in stock_returns:
+                weighted_return += stock_returns[h.stock_code] * float(h.weight)
+                total_weight += float(h.weight)
+
+        if total_weight > 0:
+            estimated_return = weighted_return / total_weight
+            logger.info(f"[{fund_code}] 今日估算涨幅: {estimated_return:.2%}")
+            return estimated_return
+
+    finally:
+        db.close()
+
+    logger.info(f"[{fund_code}] 无法估算收益")
+    return None
+
+
+def get_fund_estimated_return(fund_code: str) -> FundEstimatedReturnResponse:
+    """获取基金今日估算收益（API 接口用）
+
+    Returns:
+        FundEstimatedReturnResponse 完整响应
     """
     # 获取持仓（使用缓存）
     holdings_response = get_fund_holdings(fund_code)
@@ -303,26 +369,15 @@ def get_fund_estimated_return(fund_code: str) -> FundEstimatedReturnResponse:
             holdings=[],
         )
 
-    logger.info(f"[{fund_code}] 估算今日收益, 持仓数={len(holdings_response.holdings)}")
-
-    # 获取每只股票的实时涨跌幅
+    # 获取每只股票的实时行情
     stock_returns: list[StockReturnItem] = []
-    weighted_return = 0.0
-    total_weight = 0.0
-
     for h in holdings_response.holdings:
         realtime = _get_stock_realtime(h.stock_code)
         price = realtime.get("price")
         change_pct = realtime.get("change_pct")
         price_time = realtime.get("time")
 
-        if change_pct is not None:
-            # 涨跌幅是百分比，转为小数
-            stock_return = change_pct / 100
-            weighted_return += stock_return * h.weight
-            total_weight += h.weight
-        else:
-            stock_return = None
+        stock_return = change_pct / 100 if change_pct is not None else None
 
         stock_returns.append(StockReturnItem(
             stock_code=h.stock_code,
@@ -335,12 +390,7 @@ def get_fund_estimated_return(fund_code: str) -> FundEstimatedReturnResponse:
         ))
 
     # 计算估算收益率
-    estimated_return = weighted_return / total_weight if total_weight > 0 else None
-
-    if estimated_return is not None:
-        logger.info(f"[{fund_code}] 今日估算涨幅: {estimated_return:.2%}")
-    else:
-        logger.info(f"[{fund_code}] 无法估算收益")
+    estimated_return = calc_fund_estimated_return(fund_code)
 
     return FundEstimatedReturnResponse(
         fund_code=fund_code,

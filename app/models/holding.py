@@ -30,9 +30,11 @@ class MyHolding(BaseModel):
     last_trade_date: str = Field(..., description="最后交易日期")
     cost: float = Field(..., description="买入成本")
     current_nav: Optional[float] = Field(None, description="当前净值")
+    nav_date: Optional[str] = Field(None, description="净值日期")
     current_value: Optional[float] = Field(None, description="当前市值")
     profit: Optional[float] = Field(None, description="浮动盈亏")
     return_rate: Optional[float] = Field(None, description="持仓收益率")
+    estimated_return: Optional[float] = Field(None, description="今日估算涨幅")
 
 
 class HoldingListResponse(BaseModel):

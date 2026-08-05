@@ -5,6 +5,16 @@ from typing import Optional
 from datetime import date
 
 
+class StockHoldingItem(BaseModel):
+    """基金持仓股票的实时信息"""
+    stock_code: str = Field(..., description="股票代码")
+    stock_name: str = Field(..., description="股票名称")
+    weight: float = Field(..., description="持仓占比")
+    current_price: Optional[float] = Field(None, description="当前价格")
+    change_pct: Optional[float] = Field(None, description="今日涨跌幅")
+    price_time: Optional[str] = Field(None, description="价格时间")
+
+
 class HoldingCreate(BaseModel):
     """新增持仓请求"""
     fund_code: str = Field(..., min_length=6, max_length=6, description="基金代码")
@@ -35,6 +45,7 @@ class MyHolding(BaseModel):
     profit: Optional[float] = Field(None, description="浮动盈亏")
     return_rate: Optional[float] = Field(None, description="持仓收益率")
     estimated_return: Optional[float] = Field(None, description="今日估算涨幅")
+    stock_holdings: Optional[list[StockHoldingItem]] = Field(None, description="持仓股票实时信息")
 
 
 class HoldingListResponse(BaseModel):

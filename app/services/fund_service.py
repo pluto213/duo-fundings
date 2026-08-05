@@ -243,40 +243,58 @@ def get_fund_holdings(fund_code: str, year: str = "2026") -> FundHoldingsRespons
 def _get_stock_realtime(stock_code: str) -> dict:
     """获取股票实时行情（涨跌幅）
 
+    使用新浪财经 API
+
     Returns:
-        dict: {"price": 最新价, "change_pct": 涨跌幅%, "time": 获取时间}
+        dict: {"price": 最新价, "change_pct": 涨跌幅%, "time": 日期时间}
     """
     import subprocess
-    import json
-    from datetime import datetime
 
     symbol = stock_code.zfill(6)
 
     # 判断市场前缀
     if symbol.startswith('6'):
-        secid = f"1.{symbol}"
+        sina_symbol = f"sh{symbol}"
     else:
-        secid = f"0.{symbol}"
+        sina_symbol = f"sz{symbol}"
 
-    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f43,f170,f86"
+    url = f"https://hq.sinajs.cn/list={sina_symbol}"
 
     try:
-        result = subprocess.run(['curl', '-s', url], capture_output=True, text=True, timeout=10)
-        data = json.loads(result.stdout)
+        result = subprocess.run(
+            ['curl', '-s', url, '-H', 'Referer: https://finance.sina.com.cn'],
+            capture_output=True, timeout=10
+        )
 
-        if data.get('data'):
-            d = data['data']
-            price = d.get('f43', 0) / 100 if d.get('f43') else None
-            change_pct = d.get('f170', 0) / 100 if d.get('f170') else None
-            # f86 是价格对应的时间戳
-            price_time = datetime.fromtimestamp(d['f86']).strftime("%Y-%m-%d %H:%M:%S") if d.get('f86') else None
-            return {
-                "price": price,
-                "change_pct": change_pct,
-                "time": price_time,
-            }
+        # 解析响应（GBK 编码）
+        content = result.stdout.decode('gbk', errors='ignore')
+        if '=' in content and '"' in content:
+            data_str = content.split('"')[1]
+            parts = data_str.split(',')
+
+            if len(parts) >= 30:
+                name = parts[0]
+                open_price = float(parts[1]) if parts[1] else None
+                prev_close = float(parts[2]) if parts[2] else None
+                current_price = float(parts[3]) if parts[3] else None
+                high = float(parts[4]) if parts[4] else None
+                low = float(parts[5]) if parts[5] else None
+                trade_date = parts[30] if len(parts) > 30 else ""
+                trade_time = parts[31] if len(parts) > 31 else ""
+
+                # 计算涨跌幅
+                if current_price and prev_close and prev_close > 0:
+                    change_pct = (current_price - prev_close) / prev_close * 100
+                else:
+                    change_pct = None
+
+                return {
+                    "price": current_price,
+                    "change_pct": change_pct,
+                    "time": f"{trade_date} {trade_time}".strip() if trade_date else None,
+                }
     except Exception as e:
-        logger.warning(f"[{stock_code}] 获取实时行情失败: {e}")
+        logger.warning(f"[{stock_code}] 获取行情失败: {e}")
 
     return {"price": None, "change_pct": None, "time": None}
 
